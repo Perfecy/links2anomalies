@@ -92,4 +92,38 @@ BEGIN
     ),
 
     /*----------------------------------------------------------------
-     * 4. scored — объединяем*
+     * 4. scored — объединяем реальные связи пользователя с
+     *    посчитанной статистикой и рассчитываем support_ratio
+     *----------------------------------------------------------------*/
+    scored AS (
+        SELECT  ua.user_id,
+                ua.access_id,
+                cs.cluster_size,
+                COALESCE(cac.cluster_access_cnt, 0)       AS cluster_access_cnt,
+                /* доля = сколько-похожих-с-доступом / сколько-похожих-всего */
+                COALESCE(cac.cluster_access_cnt, 0)::NUMERIC
+                    / cs.cluster_size::NUMERIC            AS support_ratio
+        FROM   pg2links.user_access ua
+        JOIN   cluster_size          cs  ON cs.user_id = ua.user_id
+        LEFT   JOIN cluster_access_cnt cac
+               ON  cac.user_id  = ua.user_id
+               AND cac.access_id = ua.access_id
+    )
+
+    /*----------------------------------------------------------------
+     * 5. Финальный SELECT: фильтруем редкие связи и возвращаем
+     *----------------------------------------------------------------*/
+    SELECT  s.user_id,
+            s.access_id,
+            s.cluster_size,
+            s.cluster_access_cnt,
+            s.support_ratio,
+            1 - s.support_ratio                           AS anomaly_score
+    FROM    scored s
+    WHERE   s.cluster_size  >= p_min_similar     -- игнорируем «шумные» кластеры
+      AND   s.support_ratio <  p_min_support     -- редкость доступа ниже порога
+    ORDER BY anomaly_score DESC,                 -- сначала самые странные
+             s.user_id,
+             s.access_id;
+END;
+$$;
